@@ -1,0 +1,276 @@
+<!-- $Id: mod_tar.html,v 1.3 2009/08/20 17:07:14 tj Exp tj $ -->
+<!-- $Source: /home/tj/proftpd/modules/doc/RCS/mod_tar.html,v $ -->
+
+<html>
+<head>
+<title>ProFTPD module mod_tar</title>
+</head>
+
+<body bgcolor=white>
+
+<hr>
+<center>
+<h2><b>ProFTPD module <code>mod_tar</code></b></h2>
+</center>
+<hr><br>
+
+<p>
+The <code>mod_tar</code> module supports on-the-fly creation of tar files.
+Whenever a client attempts to download a directory as a tar file, the
+<code>mod_tar</code> module will automatically create a tar file of that
+directory.
+
+<p>
+To provide this feature, the <code>mod_tar</code> module uses the
+<code>libtar</code> library; see:
+<pre>
+  <a href="http://www.feep.net/libtar/">http://www.feep.net/libtar/</a>
+</pre>
+
+<p>
+This module is contained in the <code>mod_tar</code> file for
+ProFTPD 1.3.<i>x</i>, and is not compiled by default.  Installation
+instructions are discussed <a href="#Installation">here</a>.  More examples
+of <code>mod_tar</code> usage can be found <a href="#Usage">here</a>.
+
+<p>
+The most current version of <code>mod_tar</code> can be found at:
+<pre>
+  <a href="http://www.castaglia.org/proftpd/">http://www.castaglia.org/proftpd/</a>
+</pre>
+
+<h2>Author</h2>
+<p>
+Please contact TJ Saunders &lt;tj <i>at</i> castaglia.org&gt; with any
+questions, concerns, or suggestions regarding this module.
+
+<h2>Directives</h2>
+<ul>
+  <li><a href="#TarEnable">TarEnable</a>
+  <li><a href="#TarEngine">TarEngine</a>
+  <li><a href="#TarLog">TarLog</a>
+  <li><a href="#TarOptions">TarOptions</a>
+  <li><a href="#TarTempPath">TarTempPath</a>
+</ul>
+
+<hr>
+<h2><a name="TarEnable">TarEnable</a></h2>
+<strong>Syntax:</strong> TarEnable <em>on|off</em><br>
+<strong>Default:</strong> None<br>
+<strong>Context:</strong> <code>&lt;Directory&gt;</code>, <code>.ftpaccess</code>
+<strong>Module:</strong> mod_tar<br>
+<strong>Compatibility:</strong> 1.3.1rc1 and later
+
+<p>
+The <code>TarEnable</code> directive can be used to block or prevent a
+directory from being turned into a tar file by <code>mod_tar</code>.
+
+<hr>
+<h2><a name="TarEngine">TarEngine</a></h2>
+<strong>Syntax:</strong> TarEngine <em>on|off</em><br>
+<strong>Default:</strong> <em>off</em><br>
+<strong>Context:</strong> &quot;server config&quot;, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code>, <code>&lt;Anonymous&gt;</code><br>
+<strong>Module:</strong> mod_tar<br>
+<strong>Compatibility:</strong> 1.3.1rc1 and later
+
+<p>
+The <code>TarEngine</code> directive enables or disables the module's
+support for on-the-fly tar file creation.
+
+<hr>
+<h2><a name="TarLog">TarLog</a></h2>
+<strong>Syntax:</strong> TarLog <em>file</em><br>
+<strong>Default:</strong> None<br>
+<strong>Context:</strong> server config, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code><br>
+<strong>Module:</strong> mod_tar<br>
+<strong>Compatibility:</strong> 1.3.1rc1 and later
+
+<p>
+The <code>TarLog</code> directive is used to a specify a log file for
+<code>mod_tar</code> reporting and debugging, and can be done a per-server
+basis.  The <em>file</em> parameter must be the full path to the file to use for
+logging.  Note that this path must <b>not</b> be to a world-writeable
+directory and, unless <code>AllowLogSymlinks</code> is explicitly set to
+<em>on</em> (generally a bad idea), the path must <b>not</b> be a symbolic
+link.
+
+<p>
+If <em>file</em> is &quot;none&quot;, no logging will be done at all; this
+setting can be used to override a <code>TarLog</code> setting inherited from
+a <code>&lt;Global&gt;</code> context.
+
+<hr>
+<h2><a name="TarOptions">TarOptions</a></h2>
+<strong>Syntax:</strong> TarOptions <em>opt1 ...</em><br>
+<strong>Default:</strong> None<br>
+<strong>Context:</strong> &quot;server config&quot;, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code>, <code>&lt;Anonymous&gt;</code><br>
+<strong>Module:</strong> mod_tar<br>
+<strong>Compatibility:</strong> 1.3.1rc1 and later
+
+<p>
+The <code>TarOptions</code> directive is used to configure various optional
+behavior of <code>mod_tar</code>, usually pertaining to how the
+<code>.tar</code> files are constructed.
+
+<p>
+Example:
+<pre>
+  TarOptions dereference
+</pre>
+
+<p>
+The currently implemented options are:
+<ul>
+  <li><code>dereference</code><br>
+    <p>
+    Instead of creating <code>.tar</code> files which include symlinks,
+    include the files that the symlinks point to.
+</ul>
+
+<hr>
+<h2><a name="TarTempPath">TarTempPath</a></h2>
+<strong>Syntax:</strong> TarTempPath <em>path</em><br>
+<strong>Default:</strong> <em>"./"</em><br>
+<strong>Context:</strong> &quot;server config&quot;, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code>, <code>&lt;Anonymous&gt;</code><br>
+<strong>Module:</strong> mod_tar<br>
+<strong>Compatibility:</strong> 1.3.1rc1 and later
+
+<p>
+The <code>TarTempPath</code> directive controls the directory where
+<code>mod_tar</code> will writes its temporary <code>.tar</code> files.
+Keep in mind that the <code>TarTempPath</code> is subject to any chroot
+(<i>i.e.</i> use of <code>DefaultRoot</code> or
+<code>&lt;Anonymous&gt;</code>).
+
+<p>
+The default <code>TarTempPath</code> is "./", which means that the
+temporary <code>.tar</code> files are written in the current directory of
+the FTP session.
+
+<p>
+<hr>
+<h2><a name="Installation">Installation</a></h2>
+To install <code>mod_tar</code>, copy the <code>mod_tar.c</code> file into:
+<pre>
+  <i>proftpd-dir</i>/contrib/
+</pre>
+after unpacking the latest proftpd-1.3.<i>x</i> source code.  For including
+<code>mod_tar</code> as a staticly linked module:
+<pre>
+  ./configure --with-modules=mod_tar
+</pre>
+To build <code>mod_tar</code> as a DSO module:
+<pre>
+  ./configure --enable-dso --with-shared=mod_tar
+</pre>
+Then follow the usual steps:
+<pre>
+  make
+  make install
+</pre>
+
+<p>
+For those with an existing ProFTPD installation, you can use the
+<code>prxs</code> tool to add <code>mod_tar</code>, as a DSO module, to
+your existing server:
+<pre>
+  # prxs -c -i -d -I /path/to/libtar/include -L /path/to/libtar/lib mod_tar.c
+</pre>
+
+<p>
+Note that in order to support gzip and bzip2 compression, the
+<code>mod_tar</code> module requires linking with the zlib (<code>-lz</code>)
+and bzip2 lib (<code>-lbz2</code>) libraries.  You may need to install
+these packages on your system in order to build <code>mod_tar</code>.
+
+<p>
+<hr>
+<h2><a name="Usage">Usage</a></h2>
+
+<p>
+The <code>mod_tar</code> module works by watching all download requests
+(<i>i.e.</i> <code>RETR</code> commands), looking specifically for requests
+like:
+<pre>
+ RETR <i>$dir</i>.tar.gz
+</pre>
+The following extensions will trigger <code>mod_tar</code> to attempt
+on-the-fly tar file creation:
+<ul>
+  <li>.tar
+  <li>.tgz
+  <li>.tar.gz
+  <li>.tar.bz2
+</ul>
+
+<p>
+If the requested tar file already exists, then <code>mod_tar</code> does
+nothing, and lets the download proceed normally.  If the requested tar file is
+<i>not</i> for a directory, then <code>mod_tar</code> does nothing.
+
+<p>
+Next, the <code>mod_tar</code> module checks for the existence of a
+"<i>$dir</i>/.notar" file.  If this file is present, then <code>mod_tar</code>
+does nothing.  (This provides feature compatibility with wu-ftpd's on-the-fly
+tar file creation feature.)
+
+<p>
+The <code>mod_tar</code> module then checks to see if <code>TarEnable</code>
+has been configured for the requested directory.  For example, you can
+block certain directories from being bundled up by <code>mod_tar</code>
+by using:
+<pre>
+  &lt;Directory $dir&gt;
+    TarEnable off
+  &lt;/Directory&gt;
+</pre>
+
+<p>
+Once these checks have passed, a randomly generated unique filename is 
+generated for the tar file to be created; the tar file is created in the
+session's <i>current working directory</i> (although this can be changed
+using the <a href="#TarTempPath"><code>TarTempPath</code></a> directive), and
+is deleted after the download finishes.  This means that the client will need
+write privileges in that directory in order for the tar file to be created.
+
+<p>
+<b>No external commands are used for creating the tar file.</b>  Searches
+for on-the-fly tar file creation will turn up <a href="http://www.governmentsecurity.org/articles/Thedangersofftpconversionsonmisconfiguredsystems.php">reports</a>
+of vulnerabilities and issues with the tar file feature in wu-ftpd.  The
+problem there was that wu-ftpd used external commands, such as
+<code>/bin/tar</code>, to create the tar files.  These commands take a range
+of command-line options; malicious FTP clients could exploit those
+command-line options, and wu-ftpd's on-the-fly tar file implementation, to
+attack the server.  By contrast, the <code>mod_tar</code> module does
+<b>not</b> use any external commands; it uses the <code>libtar</code> library
+for creating the tar file.  And <code>mod_tar</code> ensures that the
+requested path is indeed a directory and that that directory path is treated
+as-is, with no special interpolation or interpretation.
+
+<p>
+Example configuration:
+<pre>
+  &lt;IfModule mod_tar.c&gt;
+    TarEngine on
+    TarLog /var/ftpd/tar.log
+  &lt;/IfModule&gt;
+</pre>
+
+<p>
+<hr><br>
+
+Author: <i>$Author: tj $</i><br>
+Last Updated: <i>$Date: 2009/08/20 17:07:14 $</i><br>
+
+<br><hr>
+
+<font size=2><b><i>
+&copy; Copyright 2009 TJ Saunders<br>
+ All Rights Reserved<br>
+</i></b></font>
+
+<hr><br>
+
+</body>
+</html>
+
