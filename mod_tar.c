@@ -1,6 +1,6 @@
 /*
  * ProFTPD - mod_tar
- * Copyright (c) 2009-2010 TJ Saunders
+ * Copyright (c) 2009-2012 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,7 +14,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307, USA.
+ * Foundation, Inc., 51 Franklin Street, Suite 500, Boston, MA 02110-1335, USA.
  *
  * As a special exemption, TJ Saunders and other respective copyright holders
  * give permission to link this program with OpenSSL, and distribute the
@@ -69,6 +69,8 @@ struct tar_ino {
   char ti_name[MAXPATHLEN];
 };
 typedef struct tar_ino tar_ino_t;
+
+static const char *trace_channel = "tar";
 
 /* Necessary prototype */
 static void tar_exit_ev(const void *, void *);
@@ -350,7 +352,7 @@ static int tar_gzopen(const char *path, int flags, mode_t mode) {
   /* XXX I don't like doing this, returning a pointer in the space of
    * an int, but unfortunately it is the interface defined by libtar.
    */
-  return (int) gzf;
+  return gzf;
 }
 
 static char *tar_get_ext_tar(char *path, size_t path_len) {
@@ -830,16 +832,6 @@ static void tar_exit_ev(const void *event_data, void *user_data) {
   }
 }
 
-#if defined(PR_SHARED_MODULE)
-static void tar_mod_unload_ev(const void *event_data, void *user_data) {
-  if (strcmp("mod_tar.c", (const char *) event_data) == 0) {
-    pr_event_unregister(&tar_module, NULL, NULL);
-    close(tar_logfd);
-    tar_logfd = -1;
-  }
-}
-#endif /* !PR_SHARED_MODULE */
-
 /* Initialization functions
  */
 
@@ -848,14 +840,15 @@ static int tar_sess_init(void) {
 
   c = find_config(main_server->conf, CONF_PARAM, "TarLog", FALSE);
   if (c &&
-      strcasecmp((char *) c->argv[0], "none") != 0) {
-    int res;
+      strncasecmp((char *) c->argv[0], "none", 5) != 0) {
+    int res, xerrno;
     char *path;
 
     path = c->argv[0];
 
     PRIVS_ROOT
     res = pr_log_openfile(path, &tar_logfd, 0660);
+    xerrno = errno;
     PRIVS_RELINQUISH
 
     switch (res) {
@@ -864,7 +857,7 @@ static int tar_sess_init(void) {
 
       case -1:
         pr_log_debug(DEBUG1, MOD_TAR_VERSION ": unable to open TarLog '%s': %s",
-         path, strerror(errno));
+         path, strerror(xerrno));
         break;
 
       case PR_LOG_SYMLINK:
@@ -883,10 +876,6 @@ static int tar_sess_init(void) {
 }
 
 static int tar_init(void) {
-#if defined(PR_SHARED_MODULE)
-  pr_event_register(&tar_module, "core.module-unload", tar_mod_unload_ev, NULL);
-#endif
-
   pr_log_debug(DEBUG0, MOD_TAR_VERSION ": using libtar %s", libtar_version);
   return 0;
 }
