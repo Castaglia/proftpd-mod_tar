@@ -245,13 +245,18 @@ static int tar_create_tar(tartype_t *type, char *dst_file, char *src_path,
   TAR *tar;
 
   if (tar_open(&tar, dst_file, type, O_WRONLY|O_CREAT, 0644, 0) < 0) {
+    int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s' as tar file: %s", dst_file, strerror(errno));
+      "unable to open '%s' as tar file: %s", dst_file, strerror(xerrno));
+
+    errno = xerrno;
     return -1;
   }
 
   if (append_tree(tar, src_path, src_dir) < 0) {
     int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
       "error appending '%s' to tar file: %s", src_path, strerror(xerrno));
     tar_close(tar);
@@ -262,6 +267,7 @@ static int tar_create_tar(tartype_t *type, char *dst_file, char *src_path,
 
   if (tar_append_eof(tar) < 0) {
     int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
       "error appending EOF to tar file: %s", strerror(xerrno));
     tar_close(tar);
@@ -271,8 +277,12 @@ static int tar_create_tar(tartype_t *type, char *dst_file, char *src_path,
   }
 
   if (tar_close(tar) < 0) {
+    int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "error writing tar file: %s", strerror(errno));
+      "error writing tar file: %s", strerror(xerrno));
+
+    errno = xerrno;
     return -1;
   }
 
@@ -285,14 +295,19 @@ static int tar_bzopen(const char *path, int flags, mode_t mode) {
 
   fd = open(path, flags, mode);
   if (fd < 0) {
+    int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s': %s", path, strerror(errno));
+      "unable to open '%s': %s", path, strerror(xerrno));
+
+    errno = xerrno;
     return -1;
   }
 
   if (flags & O_CREAT) {
     if (fchmod(fd, mode) < 0) {
       int xerrno = errno;
+
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "error setting mode %04o on '%s': %s", mode, path, strerror(xerrno));
 
@@ -323,14 +338,19 @@ static int tar_gzopen(const char *path, int flags, mode_t mode) {
 
   fd = open(path, flags, mode);
   if (fd < 0) {
+    int xerrno = errno;
+
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s': %s", path, strerror(errno));
+      "unable to open '%s': %s", path, strerror(xerrno));
+
+    errno = xerrno;
     return -1;
   }
 
   if (flags & O_CREAT) {
     if (fchmod(fd, mode) < 0) {
       int xerrno = errno;
+
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "error setting mode %04o on '%s': %s", mode, path, strerror(xerrno));
 
@@ -352,7 +372,7 @@ static int tar_gzopen(const char *path, int flags, mode_t mode) {
   /* XXX I don't like doing this, returning a pointer in the space of
    * an int, but unfortunately it is the interface defined by libtar.
    */
-  return gzf;
+  return (int) gzf;
 }
 
 static char *tar_get_ext_tar(char *path, size_t path_len) {
@@ -503,7 +523,8 @@ MODRET set_taroptions(cmd_rec *cmd) {
   c = add_config_param(cmd->argv[0], 1, NULL);
 
   for (i = 1; i < cmd->argc; i++) {
-    if (strcmp(cmd->argv[i], "dereference") == 0) {
+    if (strcmp(cmd->argv[i], "FollowSymlinks") == 0 ||
+        strcmp(cmd->argv[i], "dereference") == 0) {
       opts |= TAR_OPT_DEREF_SYMLINKS;
 
     } else {
@@ -703,9 +724,11 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
 
     fd = mkstemp(tar_file);
     if (fd < 0) {
+      int xerrno = errno;
+
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "error creating temporary filename using mkstemp: %s",
-        strerror(errno));
+        strerror(xerrno));
       *ptr = '.';
       return PR_DECLINED(cmd);
     }
@@ -741,9 +764,11 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
     }
 
     if (res < 0) {
+      int xerrno = errno;
+
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "error creating tar file '%s' from directory '%s': %s",
-        tar_file, path, strerror(errno));
+        tar_file, path, strerror(xerrno));
       *ptr = '.';
       return PR_DECLINED(cmd);
     }
