@@ -22,9 +22,9 @@ directory.
 
 <p>
 To provide this feature, the <code>mod_tar</code> module uses the
-<code>libtar</code> library; see:
+<code>libarchive</code> library; see:
 <pre>
-  <a href="http://www.feep.net/libtar/">http://www.feep.net/libtar/</a>
+  <a href="http://libarchive.github.com/">http://libarchive.github.com/</a>
 </pre>
 
 <p>
@@ -115,13 +115,13 @@ behavior of <code>mod_tar</code>, usually pertaining to how the
 <p>
 Example:
 <pre>
-  TarOptions dereference
+  TarOptions FollowSymlinks
 </pre>
 
 <p>
 The currently implemented options are:
 <ul>
-  <li><code>dereference</code><br>
+  <li><code>FollowSymlinks</code><br>
     <p>
     Instead of creating <code>.tar</code> files which include symlinks,
     include the files that the symlinks point to.
@@ -174,7 +174,7 @@ For those with an existing ProFTPD installation, you can use the
 <code>prxs</code> tool to add <code>mod_tar</code>, as a DSO module, to
 your existing server:
 <pre>
-  # prxs -c -i -d -I /path/to/libtar/include -L /path/to/libtar/lib mod_tar.c
+  # prxs -c -i -d -I /path/to/libarchive/include -L /path/to/libarchive/lib mod_tar.c
 </pre>
 
 <p>
@@ -198,9 +198,11 @@ The following extensions will trigger <code>mod_tar</code> to attempt
 on-the-fly tar file creation:
 <ul>
   <li>.tar
+  <li>.tbz2
   <li>.tgz
   <li>.tar.gz
   <li>.tar.bz2
+  <li>.zip
 </ul>
 
 <p>
@@ -265,7 +267,7 @@ Last Updated: <i>$Date: 2009/08/20 17:07:14 $</i><br>
 <br><hr>
 
 <font size=2><b><i>
-&copy; Copyright 2009 TJ Saunders<br>
+&copy; Copyright 2009-2012 TJ Saunders<br>
  All Rights Reserved<br>
 </i></b></font>
 
