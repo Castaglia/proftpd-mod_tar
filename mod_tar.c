@@ -22,17 +22,16 @@
  * source distribution.
  *
  * $Id: mod_tar.c,v 1.7 2009/10/01 15:30:57 tj Exp tj $
- * $Libraries: -ltar -lz -lbz2 $
+ * $Libraries: -larchive -lz -lbz2 $
  */
 
 #include "conf.h"
 #include "privs.h"
 
-#include <libtar.h>
-#include <zlib.h>
-#include <bzlib.h>
+#include <archive.h>
+#include <archive_entry.h>
 
-#define MOD_TAR_VERSION		"mod_tar/0.3.3"
+#define MOD_TAR_VERSION		"mod_tar/0.4"
 
 /* Make sure the version of proftpd is as necessary. */
 #if PROFTPD_VERSION_NUMBER < 0x0001030101
@@ -41,144 +40,163 @@
 
 module tar_module;
 
+/* Necessary prototype. */
+static void tar_exit_ev(const void *, void *);
+
 static int tar_engine = FALSE;
 static int tar_logfd = -1;
 
 static unsigned long tar_opts = 0UL;
 #define TAR_OPT_DEREF_SYMLINKS		0x001
 
-static const char *tar_tmp_path = "./";
+#define TAR_ARCHIVE_FL_USE_GZIP		0x001
+#define TAR_ARCHIVE_FL_USE_BZIP2	0x002
+#define TAR_ARCHIVE_FL_USE_USTAR	0x004
+#define TAR_ARCHIVE_FL_USE_PAX		0x008
+#define TAR_ARCHIVE_FL_USE_ZIP		0x010
 
+static const char *tar_tmp_path = "./";
 static char *tar_tmp_file = NULL;
 
-/* These are re-implementation of the tar_append_file() and tar_append_tree()
- * functions found in libtar.  We needed to implement them ourselves in order
- * to support options such as "deference", so that mod_tar's .tar files
- * follow symlinks (libtar's default behavior, hardcoded, is to NOT follow
- * symlink).
- */
-
-struct tar_dev {
-  dev_t td_dev;
-  libtar_hash_t *td_h;
+struct archive_data {
+  const char *path;
+  pr_fh_t *fh;
 };
-typedef struct tar_dev tar_dev_t;
-
-struct tar_ino {
-  ino_t ti_ino;
-  char ti_name[MAXPATHLEN];
-};
-typedef struct tar_ino tar_ino_t;
 
 static const char *trace_channel = "tar";
 
-/* Necessary prototype */
-static void tar_exit_ev(const void *, void *);
+static int append_data(pool *p, struct archive *tar,
+    struct archive_entry *entry, char *path, struct stat *st) {
+  pool *tmp_pool;
+  pr_fh_t *fh;
+  void *buf;
+  size_t buflen;
+  int res;
 
-static int append_file(TAR *t, char *real_name, char *save_name) {
-  struct stat st;
-  int i, res;
-  libtar_hashptr_t hp;
-  tar_dev_t *td = NULL;
-  tar_ino_t *ti = NULL;
-  char path[PR_TUNABLE_PATH_MAX+1];
+  fh = pr_fsio_open(path, O_RDONLY);
+  if (fh == NULL) {
+    int xerrno = errno;
 
-  if (!(tar_opts & TAR_OPT_DEREF_SYMLINKS)) {
-    res = lstat(real_name, &st);
+    pr_trace_msg(trace_channel, 3, "unable to read '%s': %s", path,
+      strerror(xerrno));
 
-  } else {
-    res = stat(real_name, &st);
+    errno = xerrno;
+    return -1;
   }
 
-  if (res != 0)
-    return -1;
+  tmp_pool = make_sub_pool(p);
 
-  /* set header block */
-  memset(&(t->th_buf), 0, sizeof(struct tar_header));
-  th_set_from_stat(t, &st);
+  /* Use a buffer size based on the filesystem blocksize, for better IO. */
+  buflen = st->st_blksize;
+  buf = palloc(tmp_pool, buflen);
 
-  /* set the header path */
-  th_set_path(t, (save_name ? save_name : real_name));
+  res = pr_fsio_read(fh, buf, buflen);
+  while (res > 0) {
+    pr_signals_handle();
+    if (archive_write_data(tar, buf, res) < 0) {
+      int xerrno;
 
-  /* check if it's a hardlink */
-  libtar_hashptr_reset(&hp);
+      xerrno = archive_errno(tar);
+      pr_trace_msg(trace_channel, 3, "error adding data to archive: %s",
+        archive_error_string(tar));
 
-  res = libtar_hash_getkey(t->h, &hp, &(st.st_dev),
-    (libtar_matchfunc_t) dev_match);
-  if (res != 0) {
-    td = (tar_dev_t *) libtar_hashptr_data(&hp);
+      destroy_pool(tmp_pool);
+      pr_fsio_close(fh);
 
-  } else {
-    td = (tar_dev_t *) calloc(1, sizeof(tar_dev_t));
-    if (td == NULL)
-      return -1;
-
-    td->td_dev = st.st_dev;
-    td->td_h = libtar_hash_new(256, (libtar_hashfunc_t) ino_hash);
-
-    if (td->td_h == NULL) {
-      free(td);
+      errno = xerrno;
       return -1;
     }
-
-    if (libtar_hash_add(t->h, td) == -1) {
-      libtar_hash_free(td->td_h, free);
-      free(td);
-      return -1;
-    }
+ 
+    res = pr_fsio_read(fh, buf, buflen);
   }
 
-  libtar_hashptr_reset(&hp);
-
-  res = libtar_hash_getkey(td->td_h, &hp, &(st.st_ino),
-    (libtar_matchfunc_t) ino_match);
-  if (res != 0) {
-    ti = (tar_ino_t *) libtar_hashptr_data(&hp);
-    t->th_buf.typeflag = LNKTYPE;
-    th_set_link(t, ti->ti_name);
-
-  } else {
-    ti = (tar_ino_t *)calloc(1, sizeof(tar_ino_t));
-    if (ti == NULL)
-      return -1;
-
-    ti->ti_ino = st.st_ino;
-    snprintf(ti->ti_name, sizeof(ti->ti_name), "%s",
-      save_name ? save_name : real_name);
-    libtar_hash_add(td->td_h, ti);
-  }
-
-  /* check if it's a symlink */
-  if (TH_ISSYM(t)) {
-    i = readlink(real_name, path, sizeof(path));
-    if (i == -1)
-      return -1;
-
-    if (i >= PR_TUNABLE_PATH_MAX)
-      i = PR_TUNABLE_PATH_MAX - 1;
-
-    path[i] = '\0';
-    th_set_link(t, path);
-  }
-
-  /* print file info */
-  if (t->options & TAR_VERBOSE)
-    th_print_long_ls(t);
-
-  /* write header */
-  res = th_write(t);
-  if (res != 0)
-    return -1;
-
-  /* if it's a regular file, write the contents as well */
-  if (TH_ISREG(t) &&
-      tar_append_regfile(t, real_name) != 0)
-    return -1;
+  destroy_pool(tmp_pool);
+  pr_fsio_close(fh);  
 
   return 0;
 }
 
-static int append_tree(TAR *t, char *real_dir, char *save_dir) {
+static int append_file(pool *p, struct archive *tar,
+    struct archive_entry *entry, char *real_name, char *save_name) {
+  struct stat st;
+  int res;
+
+  if (!(tar_opts & TAR_OPT_DEREF_SYMLINKS)) {
+    res = pr_fsio_lstat(real_name, &st);
+
+  } else {
+    res = pr_fsio_stat(real_name, &st);
+  }
+
+  if (res < 0) {
+    int xerrno = errno;
+
+    pr_trace_msg(trace_channel, 9, "error stat'ing '%s': %s", real_name,
+      strerror(xerrno));
+
+    errno = xerrno;
+    return -1;
+  }
+
+  archive_entry_clear(entry);
+  archive_entry_copy_stat(entry, &st);
+  archive_entry_copy_pathname(entry, save_name);
+
+  if (S_ISLNK(st.st_mode)) {
+    int i;
+    char path[PR_TUNABLE_PATH_MAX+1];
+
+    i = readlink(real_name, path, sizeof(path)-1);
+    if (i == -1)
+      return -1;
+
+    if (i >= PR_TUNABLE_PATH_MAX) {
+      i = PR_TUNABLE_PATH_MAX - 1;
+    }
+
+    path[i] = '\0';
+
+    pr_trace_msg(trace_channel, 15,
+      "setting destination path '%s' for symlink '%s'", path, real_name);
+    archive_entry_set_symlink(entry, path);
+  }
+ 
+  res = archive_write_header(tar, entry);
+  if (res != ARCHIVE_OK) {
+    int xerrno;
+
+    xerrno = archive_errno(tar);
+    pr_trace_msg(trace_channel, 3, "error writing archive entry header: %s",
+      archive_error_string(tar));
+
+    errno = xerrno;
+    return -1;
+  }
+
+  /* If it's a regular file, write the contents as well */
+  if (S_ISREG(st.st_mode)) {
+    if (append_data(p, tar, entry, real_name, &st) < 0) {
+      return -1;
+    }
+  }
+
+  res = archive_write_finish_entry(tar);
+  if (res != ARCHIVE_OK) {
+    int xerrno;
+
+    xerrno = archive_errno(tar);
+    pr_trace_msg(trace_channel, 3, "error finishing archive entry: %s",
+      archive_error_string(tar));
+
+    errno = xerrno;
+    return -1;
+  }
+
+  return 0;
+}
+
+static int append_tree(pool *p, struct archive *tar,
+    struct archive_entry *entry, char *real_dir, char *save_dir) {
   char real_path[PR_TUNABLE_PATH_MAX+1];
   char save_path[PR_TUNABLE_PATH_MAX+1];
   struct dirent *dent;
@@ -186,14 +204,16 @@ static int append_tree(TAR *t, char *real_dir, char *save_dir) {
   struct stat st;
   int res;
 
-  res = append_file(t, real_dir, save_dir);
-  if (res != 0)
+  res = append_file(p, tar, entry, real_dir, save_dir);
+  if (res < 0) {
     return -1;
+  }
 
   dirh = opendir(real_dir);
   if (dirh == NULL) {
-    if (errno == ENOTDIR)
+    if (errno == ENOTDIR) {
       return 0;
+    }
 
     return -1;
   }
@@ -201,9 +221,10 @@ static int append_tree(TAR *t, char *real_dir, char *save_dir) {
   while ((dent = readdir(dirh)) != NULL) {
     pr_signals_handle();
 
-    if (strcmp(dent->d_name, ".") == 0 ||
-        strcmp(dent->d_name, "..") == 0)
+    if (strncmp(dent->d_name, ".", 2) == 0 ||
+        strncmp(dent->d_name, "..", 3) == 0) {
       continue;
+    }
 
     memset(real_path, '\0', sizeof(real_path));
     snprintf(real_path, sizeof(real_path)-1, "%s/%s", real_dir, dent->d_name);
@@ -214,165 +235,247 @@ static int append_tree(TAR *t, char *real_dir, char *save_dir) {
     }
 
     if (!(tar_opts & TAR_OPT_DEREF_SYMLINKS)) {
-      res = lstat(real_path, &st);
+      res = pr_fsio_lstat(real_path, &st);
 
     } else {
-      res = stat(real_path, &st);
+      res = pr_fsio_stat(real_path, &st);
     }
 
-    if (res != 0)
+    if (res < 0) {
+      int xerrno = errno;
+
+      (void) closedir(dirh);
+
+      errno = xerrno;
       return -1;
+    }
 
     if (S_ISDIR(st.st_mode)) {
-      res = append_tree(t, real_path, (save_dir ? save_path : NULL));
-      if (res != 0)
+      res = append_tree(p, tar, entry, real_path,
+        (save_dir ? save_path : NULL));
+      if (res < 0) {
+        int xerrno = errno;
+
+        (void) closedir(dirh);
+ 
+        errno = xerrno;
         return -1;
+      }
 
       continue;
     }
 
-    res = append_file(t, real_path, (save_dir ? save_path : NULL));
-    if (res != 0)
+    res = append_file(p, tar, entry, real_path, (save_dir ? save_path : NULL));
+    if (res < 0) {
+      int xerrno = errno;
+
+      (void) closedir(dirh);
+
+      errno = xerrno;
       return -1;
+    }
   }
 
   closedir(dirh);
   return 0;
 }
 
-static int tar_create_tar(tartype_t *type, char *dst_file, char *src_path,
-    char *src_dir) {
-  TAR *tar;
+static int tar_archive_open_cb(struct archive *tar, void *user_data) {
+  struct archive_data *tar_data;
+  pr_fh_t *fh;
 
-  if (tar_open(&tar, dst_file, type, O_WRONLY|O_CREAT, 0644, 0) < 0) {
-    int xerrno = errno;
+  tar_data = user_data;
 
+  fh = pr_fsio_open(tar_data->path, O_WRONLY|O_CREAT);
+  if (fh == NULL) {
+    return ARCHIVE_FATAL;
+  }
+
+  /* Override the default 0666 mode that pr_fsio_open() uses. */
+  if (pr_fsio_fchmod(fh, 0644) < 0) {
+    pr_trace_msg(trace_channel, 3, "error setting mode on '%s' to 0644: %s",
+      tar_data->path, strerror(errno));
+  }
+
+  tar_data->fh = fh;
+  return ARCHIVE_OK;
+}
+
+static ssize_t tar_archive_write_cb(struct archive *tar, void *user_data,
+    const void *buf, size_t buflen) {
+  struct archive_data *tar_data;
+
+  tar_data = user_data;
+  return pr_fsio_write(tar_data->fh, buf, buflen);
+}
+
+static int tar_archive_close_cb(struct archive *tar, void *user_data) {
+  struct archive_data *tar_data;
+  int res;
+
+  tar_data = user_data;
+
+  res = pr_fsio_close(tar_data->fh);
+  if (res < 0) {
+    return ARCHIVE_FATAL;
+  }
+
+  tar_data->fh = NULL;
+  return ARCHIVE_OK;
+}
+
+static int tar_create_archive(pool *p, char *dst_file, unsigned long blksize,
+    char *src_path, char *src_dir, unsigned long flags) {
+  struct archive_data *tar_data;
+  struct archive *tar;
+  struct archive_entry *entry;
+  int res;
+
+  tar = archive_write_new();
+  if (tar == NULL) {
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s' as tar file: %s", dst_file, strerror(xerrno));
+      "error allocating new archive handle: %s", archive_error_string(tar));
+    errno = archive_errno(tar);
+    return -1;
+  }
+
+  /* Call archive_write_set_bytes_per_block() there, so that the optimal
+   * block size for writing data out to the archive file is used.
+   *
+   * Sadly, the libarchive API uses an int for the block size, not an
+   * unsigned long, size_t, or off_t.  Why even allow a signed data type
+   * for that parameter?
+   */
+  archive_write_set_bytes_per_block(tar, blksize);
+
+  if (flags & TAR_ARCHIVE_FL_USE_USTAR) {
+    res = archive_write_set_format_ustar(tar);
+    if (res != ARCHIVE_OK) {
+      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+        "error configuring archive handle for ustar format: %s",
+        archive_error_string(tar));
+      errno = archive_errno(tar);
+      return -1;
+    }
+
+  } else if (flags & TAR_ARCHIVE_FL_USE_ZIP) {
+    res = archive_write_set_format_zip(tar);
+    if (res != ARCHIVE_OK) {
+      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+        "error configuring archive handle for zip format: %s",
+        archive_error_string(tar));
+      errno = archive_errno(tar);
+      return -1;
+    }
+  }
+
+  if (flags & TAR_ARCHIVE_FL_USE_GZIP) {
+    res = archive_write_add_filter_gzip(tar);
+    if (res != ARCHIVE_OK) {
+      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+        "error configuring archive handle for gzip compression: %s",
+        archive_error_string(tar));
+      errno = archive_errno(tar);
+      return -1;
+    }
+
+    pr_trace_msg(trace_channel, 9, "using gzip compression for '%s'", src_path);
+
+  } else if (flags & TAR_ARCHIVE_FL_USE_BZIP2) {
+    res = archive_write_add_filter_bzip2(tar);
+    if (res != ARCHIVE_OK) {
+      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+        "error configuring archive handle for bzip2 compression: %s",
+        archive_error_string(tar));
+      errno = archive_errno(tar);
+      return -1;
+    }
+
+    pr_trace_msg(trace_channel, 9, "using bzip2 compression for '%s'",
+      src_path);
+
+  } else {
+    res = archive_write_add_filter_none(tar);
+    if (res != ARCHIVE_OK) {
+      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+        "error configuring archive handle for no compression: %s",
+        archive_error_string(tar));
+      errno = archive_errno(tar);
+      return -1;
+    }
+  }
+
+  tar_data = palloc(p, sizeof(struct archive_data));
+  tar_data->path = dst_file;
+
+  /* Allocate a new archive_entry to use for adding all entries to the
+   * archive.  This avoid creating/destroying an archive_entry object per
+   * file.
+   */
+  entry = archive_entry_new();
+  if (tar == NULL) {
+    int xerrno;
+ 
+    xerrno = archive_errno(tar);
+    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+      "error allocating new archive entry handle: %s",
+      archive_error_string(tar));
+    archive_write_free(tar);
 
     errno = xerrno;
     return -1;
   }
 
-  if (append_tree(tar, src_path, src_dir) < 0) {
+  res = archive_write_open(tar, tar_data, tar_archive_open_cb,
+    tar_archive_write_cb, tar_archive_close_cb);
+  if (res != ARCHIVE_OK) {
+    int xerrno;
+
+    xerrno = archive_errno(tar);
+    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
+      "error opening archive handle for file '%s': %s", dst_file,
+      archive_error_string(tar));
+    archive_entry_free(entry);
+    archive_write_free(tar);
+    (void) unlink(dst_file);
+
+    errno = xerrno;
+    return -1;
+  }
+
+  if (append_tree(p, tar, entry, src_path, src_dir) < 0) {
     int xerrno = errno;
 
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
       "error appending '%s' to tar file: %s", src_path, strerror(xerrno));
-    tar_close(tar);
+    archive_entry_free(entry);
+    (void) archive_write_close(tar);
+    archive_write_free(tar);
+    (void) unlink(dst_file);
 
     errno = xerrno;
     return -1;
   }
 
-  if (tar_append_eof(tar) < 0) {
-    int xerrno = errno;
+  archive_entry_free(entry);
 
+  res = archive_write_close(tar);
+  if (res < 0) {
+    int xerrno;
+
+    xerrno = archive_errno(tar);
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "error appending EOF to tar file: %s", strerror(xerrno));
-    tar_close(tar);
+      "error writing tar file: %s", archive_error_string(tar));
+
+    archive_write_free(tar);
+    (void) unlink(dst_file);
 
     errno = xerrno;
     return -1;
   }
 
-  if (tar_close(tar) < 0) {
-    int xerrno = errno;
-
-    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "error writing tar file: %s", strerror(xerrno));
-
-    errno = xerrno;
-    return -1;
-  }
-
+  archive_write_free(tar);
   return 0;
-}
-
-static int tar_bzopen(const char *path, int flags, mode_t mode) {
-  int fd;
-  BZFILE *bzf;
-
-  fd = open(path, flags, mode);
-  if (fd < 0) {
-    int xerrno = errno;
-
-    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s': %s", path, strerror(xerrno));
-
-    errno = xerrno;
-    return -1;
-  }
-
-  if (flags & O_CREAT) {
-    if (fchmod(fd, mode) < 0) {
-      int xerrno = errno;
-
-      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-        "error setting mode %04o on '%s': %s", mode, path, strerror(xerrno));
-
-      close(fd);
-      errno = xerrno;
-      return -1;
-    }
-  }
-
-  bzf = BZ2_bzdopen(fd, "wb");
-  if (bzf == NULL) {
-    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open bzlib stream on '%s': Not enough memory", path);
-    close(fd);
-    errno = EPERM;
-    return -1;
-  }
-
-  /* XXX I don't like doing this, returning a pointer in the space of
-   * an int, but unfortunately it is the interface defined by libtar.
-   */
-  return (int) bzf;
-}
-
-static int tar_gzopen(const char *path, int flags, mode_t mode) {
-  int fd;
-  gzFile gzf;
-
-  fd = open(path, flags, mode);
-  if (fd < 0) {
-    int xerrno = errno;
-
-    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open '%s': %s", path, strerror(xerrno));
-
-    errno = xerrno;
-    return -1;
-  }
-
-  if (flags & O_CREAT) {
-    if (fchmod(fd, mode) < 0) {
-      int xerrno = errno;
-
-      (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-        "error setting mode %04o on '%s': %s", mode, path, strerror(xerrno));
-
-      close(fd);
-      errno = xerrno;
-      return -1;
-    }
-  }
-
-  gzf = gzdopen(fd, "wb");
-  if (gzf == NULL) {
-    (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-      "unable to open zlib stream on '%s': Not enough memory", path);
-    close(fd);
-    errno = EPERM;
-    return -1;
-  }
-
-  /* XXX I don't like doing this, returning a pointer in the space of
-   * an int, but unfortunately it is the interface defined by libtar.
-   */
-  return (int) gzf;
 }
 
 static char *tar_get_ext_tar(char *path, size_t path_len) {
@@ -387,8 +490,6 @@ static char *tar_get_ext_tar(char *path, size_t path_len) {
 
       return &path[path_len-4];
     }
-
-    return NULL;
   }
 
   return NULL;
@@ -406,8 +507,6 @@ static char *tar_get_ext_tgz(char *path, size_t path_len) {
 
       return &path[path_len-4];
     }
-
-    return NULL;
   }
 
   return NULL;
@@ -435,6 +534,24 @@ static char *tar_get_ext_targz(char *path, size_t path_len) {
   return NULL;
 }
 
+static char *tar_get_ext_tbz2(char *path, size_t path_len) {
+  if (path_len < 5) {
+    return NULL;
+  }
+
+  if (path[path_len-5] == '.') {
+    if ((path[path_len-4] == 'T' || path[path_len-4] == 't') &&
+        (path[path_len-3] == 'B' || path[path_len-3] == 'b') &&
+        (path[path_len-2] == 'Z' || path[path_len-2] == 'z') &&
+        path[path_len-1] == '2') {
+
+      return &path[path_len-5];
+    }
+  }
+
+  return NULL;
+}
+
 static char *tar_get_ext_tarbz2(char *path, size_t path_len) {
   if (path_len < 8) {
     return NULL;
@@ -451,11 +568,75 @@ static char *tar_get_ext_tarbz2(char *path, size_t path_len) {
 
       return &path[path_len-8];
     }
-
-    return NULL;
   }
 
   return NULL;
+}
+
+static char *tar_get_ext_zip(char *path, size_t path_len) {
+  if (path_len < 4) {
+    return NULL;
+  }
+
+  if (path[path_len-4] == '.') {
+    if ((path[path_len-3] == 'Z' || path[path_len-3] == 'z') &&
+        (path[path_len-2] == 'I' || path[path_len-2] == 'i') &&
+        (path[path_len-1] == 'P' || path[path_len-1] == 'p')) {
+
+      return &path[path_len-4];
+    }
+  }
+
+  return NULL;
+}
+
+static char *tar_get_flags(char *path, size_t path_len, unsigned long *flags) {
+  char *ptr;
+
+  ptr = tar_get_ext_tar(path, path_len);
+  if (ptr != NULL) {
+    *flags |= TAR_ARCHIVE_FL_USE_USTAR;
+
+  } else {
+    ptr = tar_get_ext_tgz(path, path_len);
+    if (ptr != NULL) {
+      *flags |= TAR_ARCHIVE_FL_USE_USTAR;
+      *flags |= TAR_ARCHIVE_FL_USE_GZIP;
+
+    } else {
+      ptr = tar_get_ext_targz(path, path_len);
+      if (ptr != NULL) {
+        *flags |= TAR_ARCHIVE_FL_USE_USTAR;
+        *flags |= TAR_ARCHIVE_FL_USE_GZIP;
+
+      } else {
+        ptr = tar_get_ext_tbz2(path, path_len);
+        if (ptr != NULL) {
+          *flags |= TAR_ARCHIVE_FL_USE_USTAR;
+          *flags |= TAR_ARCHIVE_FL_USE_BZIP2;
+
+        } else {
+          ptr = tar_get_ext_tarbz2(path, path_len);
+          if (ptr != NULL) {
+            *flags |= TAR_ARCHIVE_FL_USE_USTAR;
+            *flags |= TAR_ARCHIVE_FL_USE_BZIP2;
+
+          } else {
+            ptr = tar_get_ext_zip(path, path_len);
+            if (ptr != NULL) {
+              *flags |= TAR_ARCHIVE_FL_USE_ZIP;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (*flags == 0) {
+    return NULL;
+  }
+
+  return ptr;
 }
 
 /* Configuration handlers
@@ -602,11 +783,13 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
   char *path, *tmp;
   size_t path_len;
 
-  if (!tar_engine)
+  if (tar_engine == FALSE) {
     return PR_DECLINED(cmd);
+  }
 
-  if (cmd->argc < 2)
+  if (cmd->argc < 2) {
     return PR_DECLINED(cmd);
+  }
 
   path = pr_fs_decode_path(cmd->tmp_pool, cmd->arg);
 
@@ -629,32 +812,12 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
   path_len = strlen(path);
   if (path_len > 4) {
     char *dir, *notar_file, *ptr, *tar_file;
-    int fd, res, use_tar = FALSE, use_gz = FALSE, use_bz2 = FALSE;
+    int fd, res;
     struct stat st;
     config_rec *d;
+    unsigned long flags = 0UL;
 
-    ptr = tar_get_ext_tar(path, path_len);
-    if (ptr)
-      use_tar = TRUE;
-
-    if (ptr == NULL) {
-      ptr = tar_get_ext_tgz(path, path_len);
-      if (ptr)
-        use_gz = TRUE;
-    }
-
-    if (ptr == NULL) {
-      ptr = tar_get_ext_targz(path, path_len);
-      if (ptr)
-        use_gz = TRUE;
-    }
-
-    if (ptr == NULL) {
-      ptr = tar_get_ext_tarbz2(path, path_len);
-      if (ptr)
-        use_bz2 = TRUE;
-    }
-
+    ptr = tar_get_flags(path, path_len, &flags);
     if (ptr == NULL) {
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "no .tar file extension found in '%s'", path);
@@ -666,7 +829,7 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
     path = dir_realpath(cmd->tmp_pool, path);
 
     res = dir_exists(path);
-    if (!res) {
+    if (res == 0) {
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "'%s' is not a directory, ignoring", path);
       *ptr = '.';
@@ -703,13 +866,17 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
         int tar_enable;
 
         tar_enable = *((int *) c->argv[0]);
-        if (!tar_enable) {
+        if (tar_enable == FALSE) {
           (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
-            "TarEnable off found, skipping tar file of '%s' directory", path);
+            "'TarEnable off' found, skipping tar file of '%s' directory", path);
           *ptr = '.';
           return PR_DECLINED(cmd);
         }
       }
+
+    } else {
+      pr_trace_msg(trace_channel, 9,
+        "no <Directory> match found for '%s'", path);
     }
 
     dir = strrchr(path, '/');
@@ -733,36 +900,15 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
       return PR_DECLINED(cmd);
     }
 
+    (void) fstat(fd, &st);
     close(fd);
 
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
       "writing temporary .tar file to '%s'", tar_file);
 
     /* Create the tar file. */
-    if (use_tar) {
-      res = tar_create_tar(NULL, tar_file, path, dir);
-
-    } else if (use_gz) {
-      tartype_t gz_type = {
-        (openfunc_t) tar_gzopen,
-        (closefunc_t) gzclose,
-        (readfunc_t) gzread,
-        (writefunc_t) gzwrite
-      };
-
-      res = tar_create_tar(&gz_type, tar_file, path, dir);
-
-    } else if (use_bz2) {
-      tartype_t bz2_type = {
-        (openfunc_t) tar_bzopen,
-        (closefunc_t) BZ2_bzclose,
-        (readfunc_t) BZ2_bzread,
-        (writefunc_t) BZ2_bzwrite
-      };
-
-      res = tar_create_tar(&bz2_type, tar_file, path, dir);
-    }
-
+    res = tar_create_archive(cmd->tmp_pool, tar_file,
+      (unsigned long) st.st_blksize, path, dir, flags);
     if (res < 0) {
       int xerrno = errno;
 
@@ -809,11 +955,12 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
 MODRET tar_log_retr(cmd_rec *cmd) {
   char *path;
 
-  if (!tar_engine)
+  if (tar_engine == FALSE) {
     return PR_DECLINED(cmd);
+  }
 
   path = pr_table_get(cmd->notes, "mod_tar.tar-file", NULL);
-  if (path) {
+  if (path != NULL) {
     if (unlink(path) < 0) {
       (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
         "error deleting '%s': %s", path, strerror(errno));
@@ -826,7 +973,7 @@ MODRET tar_log_retr(cmd_rec *cmd) {
   }
 
   path = pr_table_get(cmd->notes, "mod_tar.orig-path", NULL);
-  if (path) {
+  if (path != NULL) {
     /* Replace session.xfer.path, so that the TransferLog/ExtendedLogs
      * show the originally requested path, not the temporary filename
      * generated by mod_tar.
@@ -901,7 +1048,8 @@ static int tar_sess_init(void) {
 }
 
 static int tar_init(void) {
-  pr_log_debug(DEBUG0, MOD_TAR_VERSION ": using libtar %s", libtar_version);
+  pr_log_debug(DEBUG0, MOD_TAR_VERSION ": using libarchive %s",
+    archive_version_string());
   return 0;
 }
 
