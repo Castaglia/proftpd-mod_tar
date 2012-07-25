@@ -1,0 +1,131 @@
+
+  struct archive *a;
+
+  a = archive_write_new();
+
+  # Set compression: none, bzip2, or gzip
+  archive_write_set_compression_none(a);
+  archive_write_set_compression_bzip2(a);
+  archive_write_set_compression_gzip(a);
+
+  # Set format
+  archive_write_set_format_ustar(a);
+
+    OR
+
+  archive_write_set_format_pax_restricted(a); // Note 1
+
+    /* Libarchive's "pax restricted" format is a tar format that uses pax
+     * extensions only when absolutely necessary. Most of the time, it will
+     * write plain ustar entries. This is the recommended tar format for most
+     * uses. You should explicitly use ustar format only when you have to
+     * create archives that will be readable on older systems; you should
+     * explicitly request pax format only when you need to preserve as many
+     * attributes as possible. 
+     */
+
+  archive_write_set_format_zip(a);
+    // ? See caveats about ZIP64 format, 64-bit platforms:
+    //   libarchive/archive_write_set_format_zip.c
+
+Reading data from disk:
+
+  use archive_read_disk_set_gname_lookup(),
+      archive_read_disk_set_uname_lookup()
+
+    to set callbacks that libarchive will use to resolve UID/GID to names.
+    E.g. set pr_auth_get_pwuid(), pr_auth_get_grgid().  
+
+  use archive_read_disk_set_symlink_logical() (follows symlinks) or
+      archive_read_disk_set_symlink_physical() (does not follow symlinks)
+
+  use archive_read_disk_entry_from_file()?
+
+Example (from libarchive_read_disk(3)).  Note that the libarchive_write_open()
+man page has a better example:
+
+  struct archive *a;
+
+  a = archive_write_new();
+  if (a == NULL) {
+    ...
+  }
+
+  archive_write_open(a, custom_data, open_cb, write_cb, close_cb)
+
+  archive_write_open_filename(a, outname, 10240);
+
+  void add_file_to_archive(struct archive *a, const char *path) {
+
+    char buf[8K];
+    size_t nread;
+    struct archive *lookup;
+    struct archive_entry *entry;
+    int fd;
+
+    /* Create a lookup archive; set the callbacks we want to use. */ 
+    lookup = archive_read_disk_new();
+    archive_read_disk_set_standard_lookup(lookup);
+
+    entry = archive_entry_new();
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+      /* cleanup */
+    }
+
+    archive_entry_copy_pathname(entry, path);
+
+    /* The last argument is a struct stat *.  If we provide that,
+     * then read_disk_entry_from_file() just copies the stat info
+     * it needs.  We can use this, do the pr_fsio_fstat() ourselves.
+     */
+    archive_read_disk_entry_from_file(lookup, entry fd, NULL);
+    archive_write_header(a, entry);
+
+    /* XXX If a regular file, copy the file contents */
+    nread = read(fd, buf, sizeof(buf));
+    while (nread > 0) {
+      /* Handle signals */
+
+      archive_write_data(a, buf, nread);
+      nread = read(fd, buf, sizeof(buf));
+    }
+
+    archive_write_finish_entry(a);
+
+    archive_entry_free(entry);
+    archive_read_free(lookup);
+
+    close(fd);
+  }
+
+  archive_write_close(a); // Note 4
+  archive_write_free(a); // Note 5
+
+This example creates a fresh archive_entry object for each file. For better
+performance, you can reuse the same archive_entry object by using
+`archive_entry_clear()` to erase it after each use. 
+
+Note 3: Size, file type, and pathname are all required attributes here. You
+can also use `archive_entry_copy_stat()` to copy all information from the
+`struct stat` to the archive entry, including file type. To get even more
+complete information, look at the `archive_read_disk` API, which provides an
+easy way to get more extensive file metadata---including ACLs and extended
+attributes on some systems---than using the system `stat()` system call. It
+also works on platforms such as Windows where `stat()` either doesn't exist or
+is broken. 
+
+  This suggests that mod_tar should use archive_entry_copy_stat(), and
+  have a TarOptions option for enabling the recording of extended attributes
+  (and would switch to using archive_read_disk()).
+
+Note 4: The free/finish call will implicitly call `archive_write_close()` if
+necessary. However, the close call returns an error code and the free/finish
+call does not, so if you rely on the implicit close, you won't be able to
+detect any errors that happen with the final writes.
+
+Note 5: Beginning with libarchive 3.0, this function is called
+`archive_write_free()`. The previous name was `archive_write_finish()`. If you
+want to write software compatible with libarchive 2.x and libarchive 3.x, you
+should use the old name, but be aware that it will be removed when
+libarchive 4.x is released. 
