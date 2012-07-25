@@ -572,8 +572,15 @@ MODRET tar_post_pass(cmd_rec *cmd) {
     pr_event_register(&tar_module, "core.exit", tar_exit_ev, NULL);
 
     c = find_config(TOPLEVEL_CONF, CONF_PARAM, "TarOptions", FALSE);
-    if (c) {
-      tar_opts = *((unsigned long *) c->argv[0]);
+    while (c != NULL) {
+      unsigned long opts;
+
+      pr_signals_handle();
+
+      opts = *((unsigned long *) c->argv[0]);
+      tar_opts |= opts;
+
+      c = find_config_next(c, c->next, CONF_PARAM, "TarOptions", FALSE);
     }
 
     c = find_config(TOPLEVEL_CONF, CONF_PARAM, "TarTempPath", FALSE);
