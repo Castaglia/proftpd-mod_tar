@@ -1,6 +1,6 @@
 /*
  * ProFTPD - mod_tar
- * Copyright (c) 2009-2012 TJ Saunders
+ * Copyright (c) 2009-2012 T3 Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -345,6 +345,10 @@ static int tar_create_archive(pool *p, char *dst_file, unsigned long blksize,
    * Sadly, the libarchive API uses an int for the block size, not an
    * unsigned long, size_t, or off_t.  Why even allow a signed data type
    * for that parameter?
+   *
+   * NOTE: The `tar' program provided by libarchive defaults to a value
+   * of (20 * 512) for the bytes_per_block value; perhaps we should
+   * use that, too?
    */
   archive_write_set_bytes_per_block(tar, blksize);
 
