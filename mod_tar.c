@@ -1,6 +1,6 @@
 /*
  * ProFTPD - mod_tar
- * Copyright (c) 2009-2012 T3 Saunders
+ * Copyright (c) 2009-2013 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -72,6 +72,7 @@ static int append_data(pool *p, struct archive *tar,
   void *buf;
   size_t buflen;
   int res;
+  struct stat pst;
 
   fh = pr_fsio_open(path, O_RDONLY);
   if (fh == NULL) {
@@ -80,6 +81,29 @@ static int append_data(pool *p, struct archive *tar,
     pr_trace_msg(trace_channel, 3, "unable to read '%s': %s", path,
       strerror(xerrno));
 
+    errno = xerrno;
+    return -1;
+  }
+
+  res = pr_fsio_fstat(fh, &pst);
+  if (res < 0) {
+    int xerrno = errno;
+
+    pr_trace_msg(trace_channel, 3, "unable to stat '%s': %s", path,
+      strerror(xerrno));
+
+    pr_fsio_close(fh);
+    errno = xerrno;
+    return -1;
+  }
+
+  if (S_ISDIR(pst.st_mode)) {
+    int xerrno = EISDIR;
+  
+    pr_trace_msg(trace_channel, 3, "unable to use '%s': %s", path,
+      strerror(xerrno));
+
+    pr_fsio_close(fh);
     errno = xerrno;
     return -1;
   }
