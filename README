@@ -1,4 +1,0 @@
-The mod_tar module for ProFTPD provides for on-the-fly creation of
-tarballs for downloaded directories.
-
-For further module documentation, see mod_tar.html.
