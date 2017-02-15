@@ -1,6 +1,6 @@
 /*
  * ProFTPD - mod_tar
- * Copyright (c) 2009-2013 TJ Saunders
+ * Copyright (c) 2009-2017 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,8 +21,7 @@
  * resulting executable, without including the source code for OpenSSL in the
  * source distribution.
  *
- * $Id: mod_tar.c,v 1.7 2009/10/01 15:30:57 tj Exp tj $
- * $Libraries: -larchive -lz -lbz2 $
+ * $Libraries: -larchive -lz -lbz2$
  */
 
 #include "conf.h"
