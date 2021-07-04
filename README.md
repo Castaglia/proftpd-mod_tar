@@ -3,7 +3,7 @@ proftpd-mod_tar
 
 Status
 ------
-[![Build Status](https://travis-ci.org/Castaglia/proftpd-mod_tar.svg?branch=master)](https://travis-ci.org/Castaglia/proftpd-mod_tar)
+[![GitHub Actions CI Status](https://github.com/Castaglia/proftpd-mod_tar/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Castaglia/proftpd-mod_tar/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-GPL-brightgreen.svg)](https://img.shields.io/badge/license-GPL-brightgreen.svg)
 
 

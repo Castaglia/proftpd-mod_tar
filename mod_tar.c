@@ -1,6 +1,6 @@
 /*
  * ProFTPD - mod_tar
- * Copyright (c) 2009-2017 TJ Saunders
+ * Copyright (c) 2009-2021 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -987,7 +987,7 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
 }
 
 MODRET tar_log_retr(cmd_rec *cmd) {
-  char *path;
+  const char *path;
 
   if (tar_engine == FALSE) {
     return PR_DECLINED(cmd);
