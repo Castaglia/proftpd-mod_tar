@@ -8,7 +8,7 @@ on:
     branches:
       - master
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '12 2 * * 0'
 
 jobs:
   build:
@@ -103,6 +103,23 @@ jobs:
           apt-get install -y libarchive-dev libbz2-dev zlib1g-dev
 
           # for integration/regression test
+          apt-get install -y \
+            libarchive-zip-perl \
+            libcompress-raw-zlib-perl \
+            libdata-dumper-simple-perl \
+            libdatetime-perl \
+            libfile-copy-recursive-perl \
+            libfile-path-tiny-perl \
+            libfile-spec-native-perl \
+            libnet-ssh2-perl \
+            libnet-ssleay-perl \
+            libnet-telnet-perl \
+            libposix-2008-perl \
+            libtest-unit-perl \
+            libtime-hr-perl \
+            libwww-perl
+          PERL_MM_USE_DEFAULT=1 perl -MCPAN -e 'install Net::FTPSSL'
+
           # for test code coverage
           apt-get install -y lcov ruby
           gem install coveralls-lcov
@@ -122,7 +139,7 @@ jobs:
           CC: ${{ matrix.compiler }}
         run: |
           cd proftpd
-          ./configure LIBS="-lm -lsubunit -lrt -pthread" --enable-devel=coverage --enable-tests --with-modules=mod_tar
+          ./configure --with-modules=mod_tar
           make
 
       - name: Install as static module
@@ -130,13 +147,22 @@ jobs:
           cd proftpd
           make install
 
+      - name: Run integration tests
+        if: ${{ matrix.compiler == 'gcc' && matrix.container == 'ubuntu:18.04' }}
+        env:
+          PROFTPD_TEST_BIN: /usr/local/sbin/proftpd
+          PROFTPD_TEST_DIR: ${{ github.workspace }}/proftpd
+        run: |
+          cd proftpd-mod_tar
+          perl tests.pl
+
       - name: Build as shared module
         env:
           CC: ${{ matrix.compiler }}
         run: |
           cd proftpd
           make clean
-          ./configure LIBS="-lm -lsubunit -lrt -pthread" --enable-devel --enable-dso --with-shared=mod_tar
+          ./configure --enable-dso --with-shared=mod_tar
           make
 
       - name: Install as shared module

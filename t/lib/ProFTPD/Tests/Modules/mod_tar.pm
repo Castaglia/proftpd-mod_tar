@@ -113,44 +113,21 @@ sub list_tests {
 sub tar_retr_file {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
+  my $setup = test_setup($tmpdir, 'tar');
 
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
-
-  # Make sure that, if we're running as root, that the home directory has
-  # permissions/privs set for the account we create
-  if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
-    }
-
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
-    }
-  }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
-
-  my $test_file = File::Spec->rel2abs("$home_dir/test.txt");
+  my $test_file = File::Spec->rel2abs("$setup->{home_dir}/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -158,31 +135,33 @@ sub tar_retr_file {
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -199,8 +178,11 @@ sub tar_retr_file {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("test.txt.tar");
@@ -211,17 +193,16 @@ sub tar_retr_file {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 550;
+      my $expected = 550;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
       $expected = 'test.txt.tar: No such file or directory';
       $self->assert($expected eq $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
-    };
 
+      $client->quit();
+    };
     if ($@) {
       $ex = $@;
     }
@@ -230,7 +211,7 @@ sub tar_retr_file {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -240,64 +221,45 @@ sub tar_retr_file {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -320,31 +282,33 @@ sub tar_retr_tar {
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -361,8 +325,11 @@ sub tar_retr_tar {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar");
@@ -377,9 +344,7 @@ sub tar_retr_tar {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -415,7 +380,6 @@ sub tar_retr_tar {
       $self->assert($test_md5 eq $expected_md5,
         test_msg("Expected MD5 checksum '$expected_md5', got '$test_md5'"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -424,7 +388,7 @@ sub tar_retr_tar {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -434,55 +398,16 @@ sub tar_retr_tar {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_already_exists {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
-
-  # Make sure that, if we're running as root, that the home directory has
-  # permissions/privs set for the account we create
-  if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
-    }
-
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
-    }
-  }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $archive = File::Spec->rel2abs("t/etc/modules/mod_tar/subdir.tar");
   my $test_file = File::Spec->rel2abs("$tmpdir/subdir.tar");
@@ -497,31 +422,33 @@ sub tar_retr_tar_already_exists {
   my $expected_md5 = $ctx->hexdigest();
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -538,8 +465,11 @@ sub tar_retr_tar_already_exists {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar");
@@ -554,9 +484,7 @@ sub tar_retr_tar_already_exists {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -592,7 +520,6 @@ sub tar_retr_tar_already_exists {
       $self->assert($test_md5 eq $expected_md5,
         test_msg("Expected MD5 checksum '$expected_md5', got '$test_md5'"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -601,7 +528,7 @@ sub tar_retr_tar_already_exists {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -611,42 +538,31 @@ sub tar_retr_tar_already_exists {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_symlinks {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
+
+  # Make sure that, if we're running as root, that the sub directory has
+  # permissions/privs set for the account we create
+  if ($< == 0) {
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
+    }
+
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
 
   # Create three files in subdir
   for (my $i = 0; $i < 3; $i++) {
@@ -657,6 +573,14 @@ sub tar_retr_tar_symlinks {
         die("Can't write $test_file: $!");
       }
 
+      # Make sure that, if we're running as root, that the test file has
+      # permissions/privs set for the account we create
+      if ($< == 0) {
+        unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+          die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+        }
+      }
+
     } else {
       die("Can't open $test_file: $!");
     }
@@ -664,6 +588,18 @@ sub tar_retr_tar_symlinks {
 
   my $symlink_dir = File::Spec->rel2abs("$tmpdir/symlinkdir");
   mkpath($symlink_dir);
+
+  # Make sure that, if we're running as root, that the sub directory has
+  # permissions/privs set for the account we create
+  if ($< == 0) {
+    unless (chmod(0755, $symlink_dir)) {
+      die("Can't set perms on $symlink_dir to 0755: $!");
+    }
+
+    unless (chown($setup->{uid}, $setup->{gid}, $symlink_dir)) {
+      die("Can't set owner of $symlink_dir to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
 
   # Create three symlinks in symlinkdir to the files in subdir (using
   # relative paths).
@@ -688,48 +624,34 @@ sub tar_retr_tar_symlinks {
     die("Can't chdir to $cwd: $!");
   }
 
-  # Make sure that, if we're running as root, that the home directory has
-  # permissions/privs set for the account we create
-  if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
-    }
-
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
-    }
-  }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
-
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -746,8 +668,11 @@ sub tar_retr_tar_symlinks {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("symlinkdir.tar");
@@ -762,9 +687,7 @@ sub tar_retr_tar_symlinks {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -804,7 +727,6 @@ sub tar_retr_tar_symlinks {
           test_msg("Expected linkname '$expected', got '$ent_linkname'"));
       }
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -813,7 +735,7 @@ sub tar_retr_tar_symlinks {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -823,42 +745,31 @@ sub tar_retr_tar_symlinks {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_symlinks_opt_dereference {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
+
+  # Make sure that, if we're running as root, that the sub directory has
+  # permissions/privs set for the account we create
+  if ($< == 0) {
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
+    }
+
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
 
   # Create three files in subdir
   for (my $i = 0; $i < 3; $i++) {
@@ -869,6 +780,14 @@ sub tar_retr_tar_symlinks_opt_dereference {
         die("Can't write $test_file: $!");
       }
 
+      # Make sure that, if we're running as root, that the test file has
+      # permissions/privs set for the account we create
+      if ($< == 0) {
+        unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+          die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+        }
+      }
+
     } else {
       die("Can't open $test_file: $!");
     }
@@ -876,6 +795,18 @@ sub tar_retr_tar_symlinks_opt_dereference {
 
   my $symlink_dir = File::Spec->rel2abs("$tmpdir/symlinkdir");
   mkpath($symlink_dir);
+
+  # Make sure that, if we're running as root, that the sub directory has
+  # permissions/privs set for the account we create
+  if ($< == 0) {
+    unless (chmod(0755, $symlink_dir)) {
+      die("Can't set perms on $symlink_dir to 0755: $!");
+    }
+
+    unless (chown($setup->{uid}, $setup->{gid}, $symlink_dir)) {
+      die("Can't set owner of $symlink_dir to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
 
   # Create three symlinks in symlinkdir to the files in subdir (using
   # relative paths).
@@ -900,50 +831,36 @@ sub tar_retr_tar_symlinks_opt_dereference {
     die("Can't chdir to $cwd: $!");
   }
 
-  # Make sure that, if we're running as root, that the home directory has
-  # permissions/privs set for the account we create
-  if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
-    }
-
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
-    }
-  }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
-
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-        TarOptions => 'dereference',
-#        TarOptions => 'FollowSymlinks',
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
+        TarOptions => 'dereference',
+#        TarOptions => 'FollowSymlinks',
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -960,8 +877,11 @@ sub tar_retr_tar_symlinks_opt_dereference {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("symlinkdir.tar");
@@ -976,9 +896,7 @@ sub tar_retr_tar_symlinks_opt_dereference {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1018,7 +936,6 @@ sub tar_retr_tar_symlinks_opt_dereference {
           test_msg("Expected file size $expected, got $ent_sz"));
       }
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1027,7 +944,7 @@ sub tar_retr_tar_symlinks_opt_dereference {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1037,64 +954,45 @@ sub tar_retr_tar_symlinks_opt_dereference {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_enable_off {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -1107,14 +1005,15 @@ sub tar_enable_off {
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
@@ -1126,18 +1025,19 @@ sub tar_enable_off {
     },
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -1154,8 +1054,11 @@ sub tar_enable_off {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       # This should fail, since the file doesn't exist, and we configured
@@ -1168,9 +1071,7 @@ sub tar_enable_off {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 550;
+      my $expected = 550;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1180,7 +1081,6 @@ sub tar_enable_off {
 
       $client->quit();
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1189,7 +1089,7 @@ sub tar_enable_off {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1199,64 +1099,45 @@ sub tar_enable_off {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_notar {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -1269,36 +1150,46 @@ sub tar_notar {
       die("Can't write $notar_file: $!");
     }
 
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $notar_file)) {
+        die("Can't set owner of $notar_file to $setup->{uid}/$setup->{gid}: $!");
+      }
+    }
+
   } else {
     die("Can't open $notar_file: $!");
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -1315,8 +1206,11 @@ sub tar_notar {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       # This should fail, since the file doesn't exist, and we configured
@@ -1329,9 +1223,7 @@ sub tar_notar {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 550;
+      my $expected = 550;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1341,7 +1233,6 @@ sub tar_notar {
 
       $client->quit();
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1350,7 +1241,7 @@ sub tar_notar {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1360,64 +1251,45 @@ sub tar_notar {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_gz {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -1440,31 +1312,33 @@ sub tar_retr_tar_gz {
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -1481,8 +1355,11 @@ sub tar_retr_tar_gz {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar.gz");
@@ -1498,9 +1375,7 @@ sub tar_retr_tar_gz {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1536,7 +1411,6 @@ sub tar_retr_tar_gz {
       $self->assert($test_md5 eq $expected_md5,
         test_msg("Expected MD5 checksum '$expected_md5', got '$test_md5'"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1545,7 +1419,7 @@ sub tar_retr_tar_gz {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1555,64 +1429,45 @@ sub tar_retr_tar_gz {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tgz {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -1635,31 +1490,33 @@ sub tar_retr_tgz {
   }
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -1676,8 +1533,11 @@ sub tar_retr_tgz {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tgz");
@@ -1693,9 +1553,7 @@ sub tar_retr_tgz {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1731,7 +1589,6 @@ sub tar_retr_tgz {
       $self->assert($test_md5 eq $expected_md5,
         test_msg("Expected MD5 checksum '$expected_md5', got '$test_md5'"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1740,7 +1597,7 @@ sub tar_retr_tgz {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1750,64 +1607,45 @@ sub tar_retr_tgz {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_bz2 {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $src_file = File::Spec->rel2abs("$sub_dir/src.bin");
   if (open(my $fh, "> $src_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $src_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $src_file)) {
+        die("Can't set owner of $src_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -1833,31 +1671,33 @@ sub tar_retr_tar_bz2 {
   my $dst_tar_file = File::Spec->rel2abs("$tmpdir/dst.tar");
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -1874,8 +1714,11 @@ sub tar_retr_tar_bz2 {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar.bz2");
@@ -1908,9 +1751,7 @@ sub tar_retr_tar_bz2 {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1920,7 +1761,6 @@ sub tar_retr_tar_bz2 {
 
       $client->quit();
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -1929,7 +1769,7 @@ sub tar_retr_tar_bz2 {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -1939,8 +1779,7 @@ sub tar_retr_tar_bz2 {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
   eval {
@@ -1990,60 +1829,42 @@ sub tar_retr_tar_bz2 {
     $ex = $@;
   }
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_xferlog_retr_tar {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -2068,14 +1889,15 @@ sub tar_xferlog_retr_tar {
   my $xfer_log = File::Spec->rel2abs("$tmpdir/xfer.log");
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
@@ -2083,18 +1905,19 @@ sub tar_xferlog_retr_tar {
     TransferLog => $xfer_log,
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -2111,8 +1934,11 @@ sub tar_xferlog_retr_tar {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar");
@@ -2127,9 +1953,7 @@ sub tar_xferlog_retr_tar {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -2165,7 +1989,6 @@ sub tar_xferlog_retr_tar {
       $self->assert($test_md5 eq $expected_md5,
         test_msg("Expected MD5 checksum '$expected_md5', got '$test_md5'"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -2174,7 +1997,7 @@ sub tar_xferlog_retr_tar {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -2184,8 +2007,7 @@ sub tar_xferlog_retr_tar {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
   eval {
@@ -2228,7 +2050,7 @@ sub tar_xferlog_retr_tar {
         $self->assert($expected eq $xfer_type,
           test_msg("Expected '$expected', got '$xfer_type'"));
 
-        $expected = $user;
+        $expected = $setup->{user};
         $self->assert($expected eq $user_name,
           test_msg("Expected '$expected', got '$user_name'"));
 
@@ -2237,65 +2059,46 @@ sub tar_xferlog_retr_tar {
       }
     }
   };
-
   if ($@) {
     $ex = $@;
   }
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_tmp_path_cleanup_on_abort {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/test.txt");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -2305,33 +2108,47 @@ sub tar_tmp_path_cleanup_on_abort {
   my $tmp_path = File::Spec->rel2abs("$tmpdir/tarwork");
   mkpath($tmp_path);
 
+  # Make sure that, if we're running as root, that the sub directory has
+  # permissions/privs set for the account we create
+  if ($< == 0) {
+    unless (chmod(0755, $tmp_path)) {
+      die("Can't set perms on $tmp_path to 0755: $!");
+    }
+
+    unless (chown($setup->{uid}, $setup->{gid}, $tmp_path)) {
+      die("Can't set owner of $tmp_path to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
+
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-        TarTempPath => $tmp_path,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
+        TarTempPath => $tmp_path,
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -2348,8 +2165,11 @@ sub tar_tmp_path_cleanup_on_abort {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar");
@@ -2361,14 +2181,12 @@ sub tar_tmp_path_cleanup_on_abort {
       # Read in a couple of bytes, then abort the connection.
       my $buf;
       $conn->read($buf, 4, 25);
-      $conn->abort();
+      eval { $conn->abort() };
 
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -2391,7 +2209,6 @@ sub tar_tmp_path_cleanup_on_abort {
       $self->assert($nfiles == 0,
         test_msg("Expected no tmp files, found $nfiles"));
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -2400,7 +2217,7 @@ sub tar_tmp_path_cleanup_on_abort {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -2410,58 +2227,31 @@ sub tar_tmp_path_cleanup_on_abort {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_tar_2gb_single_file {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $src_file = File::Spec->rel2abs("$sub_dir/src.bin");
 
@@ -2484,6 +2274,14 @@ sub tar_retr_tar_2gb_single_file {
       die("Can't write $src_file: $!");
     }
 
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $src_file)) {
+        die("Can't set owner of $src_file to $setup->{uid}/$setup->{gid}: $!");
+      }
+    }
+
   } else {
     die("Can't open $src_file: $!");
   }
@@ -2495,14 +2293,15 @@ sub tar_retr_tar_2gb_single_file {
   my $timeout_idle = 1800;
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
@@ -2510,18 +2309,19 @@ sub tar_retr_tar_2gb_single_file {
     TimeoutIdle => $timeout_idle,
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -2538,9 +2338,12 @@ sub tar_retr_tar_2gb_single_file {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port, 0,
         10, $timeout_idle);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.tar");
@@ -2577,9 +2380,7 @@ sub tar_retr_tar_2gb_single_file {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -2625,7 +2426,6 @@ sub tar_retr_tar_2gb_single_file {
 
       close($dstfh);
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -2634,7 +2434,7 @@ sub tar_retr_tar_2gb_single_file {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh, $timeout_idle + 10) };
+    eval { server_wait($setup->{config_file}, $rfh, $timeout_idle + 10) };
     if ($@) {
       warn($@);
       exit 1;
@@ -2644,64 +2444,45 @@ sub tar_retr_tar_2gb_single_file {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub tar_retr_zip {
   my $self = shift;
   my $tmpdir = $self->{tmpdir};
-
-  my $config_file = "$tmpdir/tar.conf";
-  my $pid_file = File::Spec->rel2abs("$tmpdir/tar.pid");
-  my $scoreboard_file = File::Spec->rel2abs("$tmpdir/tar.scoreboard");
-
-  my $log_file = test_get_logfile();
-
-  my $auth_user_file = File::Spec->rel2abs("$tmpdir/tar.passwd");
-  my $auth_group_file = File::Spec->rel2abs("$tmpdir/tar.group");
-
-  my $user = 'proftpd';
-  my $passwd = 'test';
-  my $group = 'ftpd';
-  my $home_dir = File::Spec->rel2abs($tmpdir);
-  my $uid = 500;
-  my $gid = 500;
+  my $setup = test_setup($tmpdir, 'tar');
 
   my $sub_dir = File::Spec->rel2abs("$tmpdir/subdir");
   mkpath($sub_dir);
 
-  # Make sure that, if we're running as root, that the home directory has
+  # Make sure that, if we're running as root, that the sub directory has
   # permissions/privs set for the account we create
   if ($< == 0) {
-    unless (chmod(0755, $home_dir)) {
-      die("Can't set perms on $home_dir to 0755: $!");
+    unless (chmod(0755, $sub_dir)) {
+      die("Can't set perms on $sub_dir to 0755: $!");
     }
 
-    unless (chown($uid, $gid, $home_dir)) {
-      die("Can't set owner of $home_dir to $uid/$gid: $!");
+    unless (chown($setup->{uid}, $setup->{gid}, $sub_dir)) {
+      die("Can't set owner of $sub_dir to $setup->{uid}/$setup->{gid}: $!");
     }
   }
-
-  auth_user_write($auth_user_file, $user, $passwd, $uid, $gid, $home_dir,
-    '/bin/bash');
-  auth_group_write($auth_group_file, $group, $gid, $user);
 
   my $test_file = File::Spec->rel2abs("$sub_dir/src.bin");
   if (open(my $fh, "> $test_file")) {
     print $fh "Hello, World!\n";
     unless (close($fh)) {
       die("Can't write $test_file: $!");
+    }
+
+    # Make sure that, if we're running as root, that the test file has
+    # permissions/privs set for the account we create
+    if ($< == 0) {
+      unless (chown($setup->{uid}, $setup->{gid}, $test_file)) {
+        die("Can't set owner of $test_file to $setup->{uid}/$setup->{gid}: $!");
+      }
     }
 
   } else {
@@ -2726,31 +2507,33 @@ sub tar_retr_zip {
   my $dst_zip_file = File::Spec->rel2abs("$tmpdir/dst.zip");
 
   my $config = {
-    PidFile => $pid_file,
-    ScoreboardFile => $scoreboard_file,
-    SystemLog => $log_file,
-    TraceLog => $log_file,
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
     Trace => 'DEFAULT:10 tar:20',
 
-    AuthUserFile => $auth_user_file,
-    AuthGroupFile => $auth_group_file,
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
 
     AllowOverwrite => 'on',
     AllowStoreRestart => 'on',
 
     IfModules => {
-      'mod_tar.c' => {
-        TarEngine => 'on',
-        TarLog => $log_file,
-      },
-
       'mod_delay.c' => {
         DelayEngine => 'off',
+      },
+
+      'mod_tar.c' => {
+        TarEngine => 'on',
+        TarLog => $setup->{log_file},
       },
     },
   };
 
-  my ($port, $config_user, $config_group) = config_write($config_file, $config);
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
 
   # Open pipes, for use between the parent and child processes.  Specifically,
   # the child will indicate when it's done with its test by writing a message
@@ -2767,8 +2550,11 @@ sub tar_retr_zip {
   defined(my $pid = fork()) or die("Can't fork: $!");
   if ($pid) {
     eval {
+      # Allow for server startup
+      sleep(1);
+
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
-      $client->login($user, $passwd);
+      $client->login($setup->{user}, $setup->{passwd});
       $client->type('binary');
 
       my $conn = $client->retr_raw("subdir.zip");
@@ -2797,9 +2583,7 @@ sub tar_retr_zip {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected;
-
-      $expected = 226;
+      my $expected = 226;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -2809,7 +2593,6 @@ sub tar_retr_zip {
 
       $client->quit();
     };
-
     if ($@) {
       $ex = $@;
     }
@@ -2818,7 +2601,7 @@ sub tar_retr_zip {
     $wfh->flush();
 
   } else {
-    eval { server_wait($config_file, $rfh) };
+    eval { server_wait($setup->{config_file}, $rfh) };
     if ($@) {
       warn($@);
       exit 1;
@@ -2828,8 +2611,7 @@ sub tar_retr_zip {
   }
 
   # Stop server
-  server_stop($pid_file);
-
+  server_stop($setup->{pid_file});
   $self->assert_child_ok($pid);
 
   eval {
@@ -2868,14 +2650,7 @@ sub tar_retr_zip {
     $ex = $@;
   }
 
-  if ($ex) {
-    test_append_logfile($log_file, $ex);
-    unlink($log_file);
-
-    die($ex);
-  }
-
-  unlink($log_file);
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 1;
