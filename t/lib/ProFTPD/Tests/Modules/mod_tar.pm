@@ -373,7 +373,7 @@ sub tar_retr_tar {
       # Make sure the file contents have not been corrupted in transit
 
       $ctx = Digest::MD5->new();
-      $ctx->add($tar->get_content('subdir/test.txt')); 
+      $ctx->add($tar->get_content('subdir/test.txt'));
 
       my $test_md5 = $ctx->hexdigest();
 
@@ -513,7 +513,7 @@ sub tar_retr_tar_already_exists {
       # Make sure the file contents have not been corrupted in transit
 
       $ctx = Digest::MD5->new();
-      $ctx->add($tar->get_content('subdir/test.txt')); 
+      $ctx->add($tar->get_content('subdir/test.txt'));
 
       my $test_md5 = $ctx->hexdigest();
 
@@ -1404,7 +1404,7 @@ sub tar_retr_tar_gz {
       # Make sure the file contents have not been corrupted in transit
 
       $ctx = Digest::MD5->new();
-      $ctx->add($tar->get_content('subdir/test.txt')); 
+      $ctx->add($tar->get_content('subdir/test.txt'));
 
       my $test_md5 = $ctx->hexdigest();
 
@@ -1582,7 +1582,7 @@ sub tar_retr_tgz {
       # Make sure the file contents have not been corrupted in transit
 
       $ctx = Digest::MD5->new();
-      $ctx->add($tar->get_content('subdir/test.txt')); 
+      $ctx->add($tar->get_content('subdir/test.txt'));
 
       my $test_md5 = $ctx->hexdigest();
 
@@ -1816,7 +1816,7 @@ sub tar_retr_tar_bz2 {
     # Make sure the file contents have not been corrupted in transit
 
     $ctx = Digest::MD5->new();
-    $ctx->add($tar->get_content('subdir/src.bin')); 
+    $ctx->add($tar->get_content('subdir/src.bin'));
 
     my $test_md5 = $ctx->hexdigest();
 
@@ -1982,7 +1982,7 @@ sub tar_xferlog_retr_tar {
       # Make sure the file contents have not been corrupted in transit
 
       $ctx = Digest::MD5->new();
-      $ctx->add($tar->get_content('subdir/test.txt')); 
+      $ctx->add($tar->get_content('subdir/test.txt'));
 
       my $test_md5 = $ctx->hexdigest();
 
