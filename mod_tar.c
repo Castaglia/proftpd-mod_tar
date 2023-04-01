@@ -98,7 +98,7 @@ static int append_data(pool *p, struct archive *tar,
 
   if (S_ISDIR(pst.st_mode)) {
     int xerrno = EISDIR;
-  
+
     pr_trace_msg(trace_channel, 3, "unable to use '%s': %s", path,
       strerror(xerrno));
 
@@ -129,12 +129,12 @@ static int append_data(pool *p, struct archive *tar,
       errno = xerrno;
       return -1;
     }
- 
+
     res = pr_fsio_read(fh, buf, buflen);
   }
 
   destroy_pool(tmp_pool);
-  pr_fsio_close(fh);  
+  pr_fsio_close(fh);
 
   return 0;
 }
@@ -183,7 +183,7 @@ static int append_file(pool *p, struct archive *tar,
       "setting destination path '%s' for symlink '%s'", path, real_name);
     archive_entry_set_symlink(entry, path);
   }
- 
+
   res = archive_write_header(tar, entry);
   if (res != ARCHIVE_OK) {
     int xerrno;
@@ -280,7 +280,7 @@ static int append_tree(pool *p, struct archive *tar,
         int xerrno = errno;
 
         (void) closedir(dirh);
- 
+
         errno = xerrno;
         return -1;
       }
@@ -442,7 +442,7 @@ static int tar_create_archive(pool *p, char *dst_file, unsigned long blksize,
   entry = archive_entry_new();
   if (tar == NULL) {
     int xerrno;
- 
+
     xerrno = archive_errno(tar);
     (void) pr_log_writefile(tar_logfd, MOD_TAR_VERSION,
       "error allocating new archive entry handle: %s",
@@ -857,7 +857,7 @@ MODRET tar_pre_retr(cmd_rec *cmd) {
         "no .tar file extension found in '%s'", path);
       return PR_DECLINED(cmd);
     }
- 
+
     *ptr = '\0';
 
     path = dir_realpath(cmd->tmp_pool, path);
