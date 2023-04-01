@@ -1,0 +1,76 @@
+name: CodeQL
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**/*.md'
+      - '**/doc/*'
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - '**/*.md'
+      - '**/doc/*'
+  schedule:
+    - cron: "55 8 * * 1"
+
+jobs:
+  analyze:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: true
+      matrix:
+        language:
+          - cpp
+
+    steps:
+      - name: Checkout ProFTPD
+        uses: actions/checkout@v3
+        with:
+          repository: proftpd/proftpd
+
+      - name: Checkout mod_tar
+        uses: actions/checkout@v3
+        with:
+          path: proftpd-mod_tar
+
+      - name: Install Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-dev libbz2-dev zlib1g-dev
+
+      - name: Prepare module
+        run: |
+          cp proftpd-mod_tar/mod_tar.c contrib/mod_tar.c
+
+      - name: Configure
+        run: |
+          ./configure --with-modules=mod_tar
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+          config-file: proftpd-mod_tar/.codeql.yml
+          queries: +security-and-quality
+          source-root: proftpd-mod_tar
+
+      - name: Build
+        run: |
+          make
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          category: "/language:${{ matrix.language }}"
+          checkout_path: proftpd-mod_tar
+          output: sarif-results
+          upload: true
