@@ -21,14 +21,14 @@ jobs:
           - gcc
         container:
           - almalinux:8
-          - alpine:3.14
-          - ubuntu:18.04
+          - alpine:3.15
+          - ubuntu:22.04
 
     container: ${{ matrix.container }}
 
     steps:
       - name: Checkout ProFTPD
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           repository: proftpd/proftpd
           path: proftpd
@@ -39,7 +39,7 @@ jobs:
           path: proftpd-mod_tar
 
       - name: Whitespace check
-        if: ${{ matrix.container == 'ubuntu:18.04' }}
+        if: ${{ matrix.container == 'ubuntu:22.04' }}
         run: |
           apt-get update -qq
           apt-get install -y git
@@ -56,7 +56,7 @@ jobs:
           cp proftpd-mod_tar/mod_tar.c proftpd/contrib/
 
       - name: Install Alpine packages
-        if: ${{ matrix.container == 'alpine:3.14' }}
+        if: ${{ matrix.container == 'alpine:3.15' }}
         run: |
           apk update
           # for builds
@@ -91,13 +91,16 @@ jobs:
           gcc --version
 
       - name: Install Ubuntu packages
-        if: ${{ matrix.container == 'ubuntu:18.04' }}
+        if: ${{ matrix.container == 'ubuntu:22.04' }}
         run: |
           apt-get update -qq
           # for builds
           apt-get install -y clang gcc make
           # for unit tests
           apt-get install -y check libsubunit-dev
+
+          # for bzip2 support
+          apt-get install -y bzip2
 
           # for tar support
           apt-get install -y libarchive-dev libbz2-dev zlib1g-dev
@@ -131,7 +134,7 @@ jobs:
           gcc --version
 
       - name: Prepare code coverage
-        if: ${{ matrix.container == 'ubuntu:18.04' }}
+        if: ${{ matrix.container == 'ubuntu:22.04' }}
         run: |
           lcov --directory proftpd --zerocounters
 
@@ -149,7 +152,7 @@ jobs:
           make install
 
       - name: Run integration tests
-        if: ${{ matrix.compiler == 'gcc' && matrix.container == 'ubuntu:18.04' }}
+        if: ${{ matrix.compiler == 'gcc' && matrix.container == 'ubuntu:22.04' }}
         env:
           PROFTPD_TEST_BIN: /usr/local/sbin/proftpd
           PROFTPD_TEST_DIR: ${{ github.workspace }}/proftpd
