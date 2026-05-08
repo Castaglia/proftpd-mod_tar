@@ -14,6 +14,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      # Let's try opting into use of Nodejs v24; see:
+      #  https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+      # GitHub runners still causing problems with NodeJS v20; see:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     strategy:
       matrix:
         compiler:
@@ -21,20 +27,20 @@ jobs:
           - gcc
         container:
           - almalinux:8
-          - alpine:3.15
+          - alpine:3.18
           - ubuntu:22.04
 
     container: ${{ matrix.container }}
 
     steps:
       - name: Checkout ProFTPD
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           repository: proftpd/proftpd
           path: proftpd
 
       - name: Checkout module source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
         with:
           path: proftpd-mod_tar
 
@@ -56,11 +62,11 @@ jobs:
           cp proftpd-mod_tar/mod_tar.c proftpd/contrib/
 
       - name: Install Alpine packages
-        if: ${{ matrix.container == 'alpine:3.15' }}
+        if: ${{ matrix.container == 'alpine:3.18' }}
         run: |
           apk update
           # for builds
-          apk add bash build-base clang compiler-rt-static gcc make zlib-dev
+          apk add bash build-base clang compiler-rt gcc make zlib-dev
           # for unit tests
           apk add check check-dev subunit subunit-dev
           # for tar support
