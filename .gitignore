@@ -1,0 +1,11 @@
+tests.log
+t/api-tests
+t/api-tests.log
+.libs
+*.a
+*.sw?
+*.la
+*.lo
+*Tests*.log
+*.o
+*~
