@@ -50,15 +50,15 @@ jobs:
         run: |
           apt-get update -qq
           # for builds
-          apt-get install -y gcc git make tzdata
+          apt-get install -y --no-install-recommends build-essential gcc git make tzdata
 
           # for bzip2 support
-          apt-get install -y bzip2
+          apt-get install -y --no-install-recommends bzip2
           # for tar support
-          apt-get install -y libarchive-dev libbz2-dev zlib1g-dev
+          apt-get install -y --no-install-recommends libarchive-dev libbz2-dev zlib1g-dev
 
           # for integration/regression tests
-          apt-get install -y \
+          apt-get install -y --no-install-recommends \
             libarchive-zip-perl \
             libauthen-oath-perl \
             libcompress-raw-zlib-perl \
